@@ -1,0 +1,18 @@
+rules_version = '2';
+
+// Reglas para la agenda de Goat Conversion.
+// Permiten lectura y escritura pública SOLO dentro de la colección
+// "agenda_data" (la que usa la app), y bloquean todo lo demás.
+// Esto es necesario porque los clientes agendan sin necesidad de
+// iniciar sesión. El PIN dentro de la app protege el modo
+// administrador a nivel de interfaz, no a nivel de base de datos.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /agenda_data/{document=**} {
+      allow read, write: if true;
+    }
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

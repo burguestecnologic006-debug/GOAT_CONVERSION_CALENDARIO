@@ -266,6 +266,66 @@ body{
 <body>
 <div id="root"><div class="loading-note">Cargando agenda…</div></div>
 
+<!-- ============================================================
+     CONFIGURACIÓN DE FIREBASE — reemplaza estos valores por los
+     de tu propio proyecto en https://console.firebase.google.com
+     (Configuración del proyecto → tus apps → SDK de Firebase).
+     Sigue las instrucciones que te dio Claude para crearlo.
+     ============================================================ -->
+<script>
+  const FIREBASE_CONFIG = {
+    apiKey: "AIzaSyA_Ygu3g6njS59k5XkNqGlu4PM1DQ090BM",
+    authDomain: "goat-conversion.firebaseapp.com",
+    projectId: "goat-conversion",
+    storageBucket: "goat-conversion.firebasestorage.app",
+    messagingSenderId: "563881995951",
+    appId: "1:563881995951:web:a8926f84f87098bedb2e5a"
+  };
+</script>
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore-compat.js"></script>
+<script>
+  // Adaptador: implementa la misma interfaz get/set/delete/list que usa
+  // el resto de la app, pero guardando los datos en Firestore en vez de
+  // en el almacenamiento propio de Claude. Así el resto del código no
+  // necesita cambiar.
+  let firebaseReady = false;
+  let db = null;
+  try{
+    if(FIREBASE_CONFIG.apiKey && FIREBASE_CONFIG.apiKey !== 'TU_API_KEY'){
+      firebase.initializeApp(FIREBASE_CONFIG);
+      db = firebase.firestore();
+      firebaseReady = true;
+    }
+  }catch(e){ console.error('Error iniciando Firebase', e); }
+
+  window.storage = {
+    async get(key, shared){
+      if(!firebaseReady) throw new Error('Firebase no configurado');
+      const snap = await db.collection('agenda_data').doc(key).get();
+      if(!snap.exists) throw new Error('not-found');
+      return { key, value: snap.data().value, shared: !!shared };
+    },
+    async set(key, value, shared){
+      if(!firebaseReady) throw new Error('Firebase no configurado');
+      await db.collection('agenda_data').doc(key).set({ value, updatedAt: Date.now() });
+      return { key, value, shared: !!shared };
+    },
+    async delete(key, shared){
+      if(!firebaseReady) throw new Error('Firebase no configurado');
+      await db.collection('agenda_data').doc(key).delete();
+      return { key, deleted: true, shared: !!shared };
+    },
+    async list(prefix, shared){
+      if(!firebaseReady) throw new Error('Firebase no configurado');
+      const snap = await db.collection('agenda_data').get();
+      const keys = [];
+      snap.forEach(d=>{ if(!prefix || d.id.startsWith(prefix)) keys.push(d.id); });
+      return { keys, prefix, shared: !!shared };
+    }
+  };
+</script>
+
 <script>
 const STORAGE_CONFIG_KEY = 'agenda-config-v1';
 const STORAGE_BOOKINGS_KEY = 'agenda-bookings-v1';
@@ -368,19 +428,20 @@ function defaultConfig(){
     notifyWebhookUrl: '',
     slotStep: 30,
     workingHours: {
-      0: { open:false, start:'09:00', end:'13:00' },
-      1: { open:true,  start:'09:00', end:'18:00' },
-      2: { open:true,  start:'09:00', end:'18:00' },
-      3: { open:true,  start:'09:00', end:'18:00' },
-      4: { open:true,  start:'09:00', end:'18:00' },
-      5: { open:true,  start:'09:00', end:'18:00' },
-      6: { open:false, start:'09:00', end:'13:00' },
+      0: { open:false, start:'09:00', end:'21:00' },
+      1: { open:true,  start:'09:00', end:'21:00' },
+      2: { open:true,  start:'09:00', end:'21:00' },
+      3: { open:true,  start:'09:00', end:'21:00' },
+      4: { open:true,  start:'09:00', end:'21:00' },
+      5: { open:true,  start:'09:00', end:'21:00' },
+      6: { open:true,  start:'09:00', end:'21:00' },
     },
     types: [
-      { id: uid(), name:'Edición de video', duration:60, color:'#6D5EF0' },
-      { id: uid(), name:'Grabación de video', duration:120, color:'#F59E0B' },
-      { id: uid(), name:'Reunión', duration:30, color:'#10B981' },
-      { id: uid(), name:'Capacitación', duration:90, color:'#EC4899' },
+      { id: uid(), name:'Edición de video', color:'#6D5EF0', durationMode:'flexible', duration:120, minDuration:30, maxDuration:240, durationStep:30 },
+      { id: uid(), name:'Grabación de video', color:'#F59E0B', durationMode:'flexible', duration:120, minDuration:60, maxDuration:300, durationStep:30 },
+      { id: uid(), name:'Reunión', color:'#10B981', durationMode:'fixed', duration:30, minDuration:30, maxDuration:120, durationStep:30 },
+      { id: uid(), name:'Capacitación', color:'#EC4899', durationMode:'fixed', duration:60, minDuration:30, maxDuration:180, durationStep:30 },
+      { id: uid(), name:'Creación Parrilla', color:'#0EA5E9', durationMode:'fixed', duration:90, minDuration:30, maxDuration:240, durationStep:30 },
     ]
   };
 }
@@ -392,6 +453,7 @@ const state = {
   view: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
   selectedDate: null,
   selectedTypeId: null,
+  selectedDuration: null,
   selectedSlot: null,
   showAdminModal: false,
   lastSeen: 0,
@@ -402,6 +464,18 @@ const state = {
 };
 
 async function loadAll(){
+  if(!firebaseReady){
+    document.getElementById('root').innerHTML = `
+      <div style="max-width:480px; margin: 60px auto; text-align:center; padding:24px;">
+        <div style="font-family:'Plus Jakarta Sans',sans-serif; font-weight:800; font-size:19px; margin-bottom:10px;">⚠️ Falta configurar Firebase</div>
+        <p style="color:#7A776E; font-size:13.5px; line-height:1.6;">
+          Abre el archivo <b>index.html</b>, busca <code>FIREBASE_CONFIG</code> cerca del inicio del archivo
+          y reemplaza los valores de ejemplo por los de tu propio proyecto de Firebase.
+          Sigue el instructivo que te dieron para crearlo.
+        </p>
+      </div>`;
+    return;
+  }
   try{
     const cfgRes = await window.storage.get(STORAGE_CONFIG_KEY, true);
     state.config = cfgRes ? JSON.parse(cfgRes.value) : defaultConfig();
@@ -460,9 +534,10 @@ function getBookingsForDate(dkey){
 }
 function typeById(id){ return state.config.types.find(t=>t.id===id); }
 
-function computeSlots(dkey, typeId){
+function computeSlots(dkey, typeId, durationOverride){
   const type = typeById(typeId);
   if(!type) return [];
+  const duration = durationOverride || type.duration;
   const dow = new Date(dkey+'T00:00:00').getDay();
   const hours = state.config.workingHours[dow];
   if(!hours || !hours.open) return [];
@@ -473,9 +548,9 @@ function computeSlots(dkey, typeId){
   const slots = [];
   const isToday = dkey === todayKey();
   const nowMin = new Date().getHours()*60 + new Date().getMinutes();
-  for(let start = openMin; start + type.duration <= closeMin; start += step){
+  for(let start = openMin; start + duration <= closeMin; start += step){
     if(isToday && start <= nowMin) continue;
-    const end = start + type.duration;
+    const end = start + duration;
     const overlaps = dayBookings.some(b=>{
       const bStart = timeToMin(b.time);
       const bEnd = bStart + b.duration;
@@ -484,6 +559,17 @@ function computeSlots(dkey, typeId){
     if(!overlaps) slots.push(minToTime(start));
   }
   return slots;
+}
+function formatDuration(mins){
+  if(mins % 60 === 0) return (mins/60) + ' h';
+  if(mins < 60) return mins + ' min';
+  return Math.floor(mins/60) + ' h ' + (mins%60) + ' min';
+}
+function durationOptionsFor(type){
+  const opts = [];
+  const step = type.durationStep || 30;
+  for(let m = type.minDuration || step; m <= (type.maxDuration || m); m += step) opts.push(m);
+  return opts;
 }
 
 function dayStatus(dkey){
@@ -624,6 +710,7 @@ function renderCalendarPanel(){
       cell.onclick = ()=>{
         state.selectedDate = dkey;
         state.selectedTypeId = state.config.types[0] ? state.config.types[0].id : null;
+        state.selectedDuration = state.config.types[0] ? state.config.types[0].duration : null;
         state.selectedSlot = null;
         render();
       };
@@ -650,29 +737,76 @@ function renderSidePanel(){
   const dObj = new Date(state.selectedDate+'T00:00:00');
   const label = `${DAY_LABELS_FULL[dObj.getDay()]}, ${dObj.getDate()} de ${MONTH_NAMES[dObj.getMonth()]}`;
   panel.appendChild(el(`<div class="day-panel-title">${label}</div>`));
-  panel.appendChild(el(`<div class="day-panel-sub">Elige el tipo de sesión y un horario disponible</div>`));
+
+  if(state.isAdmin){
+    const dayBookings = getBookingsForDate(state.selectedDate).sort((a,b)=> a.time.localeCompare(b.time));
+    panel.appendChild(el(`<div class="slots-title" style="margin-top:2px;">Compromisos de este día</div>`));
+    if(dayBookings.length === 0){
+      panel.appendChild(el(`<div class="empty-note" style="padding:10px 0 18px;">No tienes nada agendado este día.</div>`));
+    } else {
+      const list = el(`<div class="booking-list" style="margin-bottom:20px; max-height:220px;"></div>`);
+      dayBookings.forEach(b=>{
+        const isBlocked = b.status === 'blocked';
+        const type = typeById(b.typeId);
+        const endMin = timeToMin(b.time) + b.duration;
+        const item = el(`
+          <div class="booking-item ${isBlocked?'is-blocked':''}" style="${!isBlocked && type ? `border-left-color:${type.color}`:''}">
+            <div class="booking-main">
+              <div class="booking-date">${b.time} – ${minToTime(endMin)} · ${formatDuration(b.duration)}</div>
+              <div class="booking-who">${isBlocked ? 'Bloqueado' : esc(b.clientName)}</div>
+              <div class="booking-type-tag">${isBlocked ? esc(b.notes||'Horario no disponible') : (type?esc(type.name):'') + (b.clientContact? ' · '+esc(b.clientContact):'')}</div>
+            </div>
+          </div>
+        `);
+        list.appendChild(item);
+      });
+      panel.appendChild(list);
+    }
+    panel.appendChild(el(`<div class="day-panel-sub" style="margin-bottom:6px;">Agendar manualmente para este día</div>`));
+  } else {
+    panel.appendChild(el(`<div class="day-panel-sub">Elige el tipo de sesión y un horario disponible</div>`));
+  }
 
   const typeWrap = el(`<div class="type-select"></div>`);
   state.config.types.forEach(t=>{
     const selected = state.selectedTypeId === t.id;
+    const isFlex = t.durationMode === 'flexible';
     const opt = el(`
       <div class="type-opt ${selected?'selected':''}">
         <div class="type-opt-left">
           <span class="type-swatch" style="background:${t.color}"></span>
           <span class="type-name">${esc(t.name)}</span>
         </div>
-        <span class="type-dur">${t.duration} min</span>
+        <span class="type-dur">${isFlex ? 'Duración libre' : formatDuration(t.duration)}</span>
       </div>
     `);
-    opt.onclick = ()=>{ state.selectedTypeId = t.id; state.selectedSlot = null; render(); };
+    opt.onclick = ()=>{
+      state.selectedTypeId = t.id;
+      state.selectedDuration = isFlex ? t.duration : t.duration;
+      state.selectedSlot = null;
+      render();
+    };
     typeWrap.appendChild(opt);
   });
   panel.appendChild(typeWrap);
 
+  const currentType = state.selectedTypeId ? typeById(state.selectedTypeId) : null;
+
+  if(currentType && currentType.durationMode === 'flexible'){
+    panel.appendChild(el(`<div class="slots-title">Duración de la sesión</div>`));
+    const durWrap = el(`<div class="slots-grid" style="margin-bottom:18px;"></div>`);
+    durationOptionsFor(currentType).forEach(m=>{
+      const btn = el(`<button class="slot-btn ${state.selectedDuration===m?'selected':''}">${formatDuration(m)}</button>`);
+      btn.onclick = ()=>{ state.selectedDuration = m; state.selectedSlot = null; render(); };
+      durWrap.appendChild(btn);
+    });
+    panel.appendChild(durWrap);
+  }
+
   panel.appendChild(el(`<div class="slots-title">Horarios disponibles</div>`));
-  const slots = state.selectedTypeId ? computeSlots(state.selectedDate, state.selectedTypeId) : [];
+  const slots = currentType ? computeSlots(state.selectedDate, currentType.id, state.selectedDuration) : [];
   if(slots.length === 0){
-    panel.appendChild(el(`<div class="empty-note">No hay horarios disponibles este día para este tipo de sesión.</div>`));
+    panel.appendChild(el(`<div class="empty-note">No hay horarios disponibles este día para esta duración.</div>`));
   } else {
     const slotsGrid = el(`<div class="slots-grid"></div>`);
     slots.forEach(s=>{
@@ -706,15 +840,16 @@ function renderBookingForm(){
 
     await refreshBookings();
     const type = typeById(state.selectedTypeId);
+    const duration = state.selectedDuration || type.duration;
     const conflict = getBookingsForDate(state.selectedDate).some(b=>{
       const bStart = timeToMin(b.time), bEnd = bStart+b.duration;
-      const nStart = timeToMin(state.selectedSlot), nEnd = nStart+type.duration;
+      const nStart = timeToMin(state.selectedSlot), nEnd = nStart+duration;
       return nStart < bEnd && nEnd > bStart;
     });
     if(conflict){ showToast('Ese horario ya fue tomado, elige otro'); state.selectedSlot=null; render(); return; }
 
     const booking = {
-      id: uid(), date: state.selectedDate, time: state.selectedSlot, duration: type.duration,
+      id: uid(), date: state.selectedDate, time: state.selectedSlot, duration: duration,
       typeId: type.id, clientName: name, clientContact: contact, notes,
       status: 'confirmed', createdAt: Date.now()
     };
@@ -870,16 +1005,40 @@ function renderAdminModal(){
   function renderTypesOnly(){
     typesWrap.innerHTML = '';
     state.config.types.forEach((t, idx)=>{
+      const isFlex = t.durationMode === 'flexible';
       const row = el(`
-        <div class="type-row">
+        <div class="type-row" style="flex-wrap:wrap; row-gap:6px;">
           <button class="color-dot-btn picked" style="background:${t.color}" data-idx="${idx}"></button>
-          <input type="text" value="${esc(t.name)}" data-idx="${idx}" data-field="name" />
-          <input type="number" value="${t.duration}" min="5" step="5" data-idx="${idx}" data-field="duration" />
+          <input type="text" value="${esc(t.name)}" data-idx="${idx}" data-field="name" style="flex:1 1 100px;" />
+          <button class="add-link mode-pill" style="border:1px solid var(--border); border-radius:999px; padding:5px 10px; white-space:nowrap;">${isFlex?'Libre':'Fija'}</button>
+          ${isFlex ? `
+            <input type="number" value="${t.minDuration||30}" min="15" step="15" data-idx="${idx}" data-field="minDuration" style="width:52px;" title="Mínimo (min)" />
+            <span style="font-size:11px;color:var(--text-dim);">a</span>
+            <input type="number" value="${t.maxDuration||240}" min="15" step="15" data-idx="${idx}" data-field="maxDuration" style="width:52px;" title="Máximo (min)" />
+          ` : `
+            <input type="number" value="${t.duration}" min="5" step="5" data-idx="${idx}" data-field="duration" style="width:56px;" title="Duración (min)" />
+          `}
           <button class="remove-x" data-idx="${idx}">✕</button>
         </div>
       `);
       row.querySelector('input[data-field=name]').oninput = (e)=>{ state.config.types[idx].name = e.target.value; };
-      row.querySelector('input[data-field=duration]').oninput = (e)=>{ state.config.types[idx].duration = parseInt(e.target.value)||30; };
+      const durInput = row.querySelector('input[data-field=duration]');
+      if(durInput) durInput.oninput = (e)=>{ state.config.types[idx].duration = parseInt(e.target.value)||30; };
+      const minInput = row.querySelector('input[data-field=minDuration]');
+      if(minInput) minInput.oninput = (e)=>{ state.config.types[idx].minDuration = parseInt(e.target.value)||30; };
+      const maxInput = row.querySelector('input[data-field=maxDuration]');
+      if(maxInput) maxInput.oninput = (e)=>{ state.config.types[idx].maxDuration = parseInt(e.target.value)||60; };
+      row.querySelector('.mode-pill').onclick = ()=>{
+        const nowFlex = state.config.types[idx].durationMode === 'flexible';
+        state.config.types[idx].durationMode = nowFlex ? 'fixed' : 'flexible';
+        if(!nowFlex){
+          if(!state.config.types[idx].minDuration) state.config.types[idx].minDuration = 30;
+          if(!state.config.types[idx].maxDuration) state.config.types[idx].maxDuration = 240;
+          if(!state.config.types[idx].durationStep) state.config.types[idx].durationStep = 30;
+          state.config.types[idx].duration = state.config.types[idx].duration || 60;
+        }
+        renderTypesOnly();
+      };
       row.querySelector('.remove-x').onclick = ()=>{ state.config.types.splice(idx,1); renderTypesOnly(); };
       row.querySelector('.color-dot-btn').onclick = ()=>{
         const curColorIdx = TYPE_COLORS.indexOf(t.color);
@@ -892,7 +1051,7 @@ function renderAdminModal(){
   }
   renderTypesOnly();
   overlay.querySelector('#addType').onclick = ()=>{
-    state.config.types.push({ id: uid(), name:'Nuevo tipo', duration:60, color: TYPE_COLORS[state.config.types.length % TYPE_COLORS.length] });
+    state.config.types.push({ id: uid(), name:'Nuevo tipo', duration:60, durationMode:'fixed', minDuration:30, maxDuration:240, durationStep:30, color: TYPE_COLORS[state.config.types.length % TYPE_COLORS.length] });
     renderTypesOnly();
   };
 
